@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bashron"
+version = "0.1.0"
+description = "A warrior-class CLI to schedule and run bash scripts daily"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = ["cli", "bash", "scheduler", "cron", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "schedule>=1.2.0",
+]
+
+[project.scripts]
+bashron = "bashron.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/bashron"
+Repository = "https://github.com/yourusername/bashron"
+Issues = "https://github.com/yourusername/bashron/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bashron"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=bashron --cov-report=term-missing --cov-fail-under=100"
+
+[tool.coverage.run]
+source = ["bashron"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
