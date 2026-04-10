@@ -1,0 +1,70 @@
+name: Release to PyPI
+
+# Triggers when you push a tag like v0.1.2, v0.2.0, v1.0.0, etc.
+# To ship a release:
+#   1. Bump the version in pyproject.toml and src/bashron/__init__.py
+#   2. git commit + git push
+#   3. git tag v0.1.2 && git push origin v0.1.2
+# GitHub Actions takes it from there. PyPI receives a signed OIDC token
+# directly from GitHub — no PyPI API tokens are stored anywhere.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    name: Build wheel + publish to PyPI
+    runs-on: ubuntu-latest
+
+    # REQUIRED for OIDC — this is what lets GitHub mint a short-lived token
+    # that PyPI will accept. Without it, trusted publishing cannot work.
+    permissions:
+      id-token: write
+      contents: read
+
+    # GitHub environment — locks the publish step to a named environment
+    # you can optionally add manual approval gates to in repo settings.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/bashron/
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Verify tag matches package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PROJECT_VERSION=$(uv run --with tomli python -c "import tomli,sys; print(tomli.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "Git tag:     v${TAG_VERSION}"
+          echo "pyproject:   ${PROJECT_VERSION}"
+          if [ "${TAG_VERSION}" != "${PROJECT_VERSION}" ]; then
+            echo "::error::Tag v${TAG_VERSION} does not match pyproject.toml version ${PROJECT_VERSION}"
+            exit 1
+          fi
+
+      - name: Run the test suite
+        run: uv run --extra dev pytest -q
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Validate artifacts with twine
+        run: uvx --from twine twine check dist/*
+
+      - name: Publish to PyPI via trusted publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No `with:` block — no username, no password, no token.
+        # The action uses the OIDC token from `permissions: id-token: write`
+        # above, and PyPI verifies it against the trusted publisher you
+        # configured at https://pypi.org/manage/account/publishing/
