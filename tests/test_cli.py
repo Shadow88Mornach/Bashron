@@ -193,13 +193,24 @@ class TestDoctor:
 # ---------------------------------------------------------------------------
 
 class TestMain:
-    def test_no_args_shows_logo_and_help(self):
+    def test_no_args_empty_store_shows_welcome(self):
         result = runner_cli.invoke(app, [])
         assert result.exit_code == 0
-        assert "warrior-class bash scheduling" in result.output
-        assert "bashron" in result.output
+        assert "welcome to bashron" in result.output
+        assert "No jobs yet" in result.output
 
-    def test_subcommand_does_not_show_logo(self):
+    def test_no_args_with_jobs_shows_dashboard(self, tmp_path):
+        script = make_script(tmp_path)
+        store.add("watchdog", str(script), "08:00")
+        result = runner_cli.invoke(app, [])
+        assert result.exit_code == 0
+        assert "watchdog" in result.output
+        # Dashboard view — NOT the empty-state welcome
+        assert "No jobs yet" not in result.output
+
+    def test_subcommand_with_jobs_does_not_show_logo(self, tmp_path):
+        script = make_script(tmp_path)
+        store.add("alpha", str(script), "08:00")
         result = runner_cli.invoke(app, ["list"])
         assert result.exit_code == 0
         assert "warrior-class bash scheduling" not in result.output
@@ -374,10 +385,10 @@ class TestRemove:
 # ---------------------------------------------------------------------------
 
 class TestList:
-    def test_list_empty(self):
+    def test_list_empty_shows_welcome(self):
         result = runner_cli.invoke(app, ["list"])
         assert result.exit_code == 0
-        assert "No scripts scheduled" in result.output
+        assert "welcome to bashron" in result.output
 
     def test_list_json_empty(self):
         result = runner_cli.invoke(app, ["list", "--json"])
@@ -1015,10 +1026,10 @@ class TestNew:
 # ---------------------------------------------------------------------------
 
 class TestStatusCmd:
-    def test_status_no_jobs(self):
+    def test_status_no_jobs_shows_welcome(self):
         result = runner_cli.invoke(app, ["status"])
         assert result.exit_code == 0
-        assert "No scripts scheduled" in result.output
+        assert "welcome to bashron" in result.output
 
     def test_status_shows_job_never_run(self, tmp_path):
         s = make_script(tmp_path)
@@ -1341,3 +1352,154 @@ class TestServiceDefault:
         result = runner_cli.invoke(app, ["service"])
         assert result.exit_code == 0
         assert "install" in result.output or "status" in result.output
+
+
+# ---------------------------------------------------------------------------
+# natural-language time parsing (_parse_time)
+# ---------------------------------------------------------------------------
+
+class TestParseTime:
+    def test_none_raises(self):
+        with pytest.raises(ValueError, match="required"):
+            cli._parse_time(None)
+
+    def test_garbage_raises(self):
+        with pytest.raises(ValueError, match="Invalid time"):
+            cli._parse_time("tea o'clock")
+
+    def test_hour_suffix_out_of_range_raises(self):
+        with pytest.raises(ValueError, match="12-hour clock"):
+            cli._parse_time("13pm")
+
+    def test_hour_without_suffix_out_of_range_raises(self):
+        with pytest.raises(ValueError, match="Hour must be"):
+            cli._parse_time("25:00")
+
+    def test_minute_out_of_range_raises(self):
+        with pytest.raises(ValueError, match="Hour must be"):
+            cli._parse_time("10:99")
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("9am", "09:00"),
+        ("9 AM", "09:00"),
+        ("12am", "00:00"),    # midnight
+        ("12pm", "12:00"),    # noon
+        ("3:30pm", "15:30"),
+        ("3:30 PM", "15:30"),
+        ("11:59pm", "23:59"),
+        ("14:30", "14:30"),
+        ("09:00", "09:00"),
+        ("0:00", "00:00"),
+    ])
+    def test_accepts_natural_formats(self, raw, expected):
+        assert cli._parse_time(raw) == expected
+
+
+# ---------------------------------------------------------------------------
+# bare-command dashboard view
+# ---------------------------------------------------------------------------
+
+class TestBareCommandView:
+    def test_with_jobs_renders_dashboard(self, tmp_path):
+        script = make_script(tmp_path)
+        store.add("alpha", str(script), "08:00")
+        result = runner_cli.invoke(app, [])
+        assert result.exit_code == 0
+        assert "alpha" in result.output
+        assert "status --watch" in result.output
+
+
+# ---------------------------------------------------------------------------
+# status --watch
+# ---------------------------------------------------------------------------
+
+class TestStatusWatch:
+    def test_watch_flag_calls_watch_helper(self, tmp_path):
+        script = make_script(tmp_path)
+        store.add("w1", str(script), "08:00")
+        with patch("bashron.cli._watch_status") as mock_watch:
+            result = runner_cli.invoke(app, ["status", "--watch", "--interval", "0.01"])
+        assert result.exit_code == 0
+        mock_watch.assert_called_once_with(0.01)
+
+    def test_watch_status_runs_bounded_iterations(self, tmp_path):
+        script = make_script(tmp_path)
+        store.add("w2", str(script), "08:00")
+        with patch("bashron.cli.time.sleep", return_value=None):
+            cli._watch_status(interval=0.0, iterations=2)
+
+    def test_watch_status_handles_keyboard_interrupt(self, tmp_path):
+        script = make_script(tmp_path)
+        store.add("w3", str(script), "08:00")
+        with patch("bashron.cli.time.sleep", side_effect=KeyboardInterrupt):
+            cli._watch_status(interval=0.0, iterations=5)
+
+
+# ---------------------------------------------------------------------------
+# add --explain dry-run
+# ---------------------------------------------------------------------------
+
+class TestAddExplain:
+    def test_explain_local_script_does_not_persist(self, tmp_path):
+        s = make_script(tmp_path)
+        result = runner_cli.invoke(
+            app,
+            ["add", "dryjob", str(s), "--at", "9am", "--explain"],
+        )
+        assert result.exit_code == 0
+        assert "Dry run" in result.output
+        assert "dryjob" in result.output
+        # Nothing should have been written to the store
+        assert store.load() == []
+
+    def test_explain_url_script_does_not_download(self, tmp_path):
+        with patch("bashron.cli._download_script") as mock_dl:
+            result = runner_cli.invoke(
+                app,
+                ["add", "urlpreview", "https://example.com/x.sh", "--explain"],
+            )
+        assert result.exit_code == 0
+        assert "Dry run" in result.output
+        mock_dl.assert_not_called()
+        assert store.load() == []
+
+
+# ---------------------------------------------------------------------------
+# new command — time parse error path
+# ---------------------------------------------------------------------------
+
+class TestNewParseError:
+    def test_invalid_time_fails(self, tmp_path):
+        result = runner_cli.invoke(
+            app,
+            ["new", "badtime", "--dir", str(tmp_path), "--at", "nope"],
+        )
+        assert result.exit_code == 1
+        assert "Invalid time" in result.output
+
+
+# ---------------------------------------------------------------------------
+# aliases — ls / rm / ps
+# ---------------------------------------------------------------------------
+
+class TestAliases:
+    def test_ls_is_list(self, tmp_path):
+        script = make_script(tmp_path)
+        store.add("alias1", str(script), "08:00")
+        result = runner_cli.invoke(app, ["ls"])
+        assert result.exit_code == 0
+        assert "alias1" in result.output
+
+    def test_ps_is_status(self, tmp_path):
+        script = make_script(tmp_path)
+        store.add("alias2", str(script), "08:00")
+        result = runner_cli.invoke(app, ["ps"])
+        assert result.exit_code == 0
+        assert "alias2" in result.output
+
+    def test_rm_is_remove(self, tmp_path):
+        script = make_script(tmp_path)
+        store.add("alias3", str(script), "08:00")
+        result = runner_cli.invoke(app, ["rm", "alias3"])
+        assert result.exit_code == 0
+        assert store.load() == []

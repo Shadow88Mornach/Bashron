@@ -1,18 +1,46 @@
 # bashron
 
-> Warrior-class daily bash script scheduler for your terminal.
+> Warrior-class bash script scheduler for your terminal — friendly time formats, live dashboard, zero cron syntax.
 
+[![PyPI version](https://img.shields.io/pypi/v/bashron.svg)](https://pypi.org/project/bashron/)
+[![Python versions](https://img.shields.io/pypi/pyversions/bashron.svg)](https://pypi.org/project/bashron/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+```bash
+$ bashron add backup ~/scripts/backup.sh --at 9am
+$ bashron
 ```
-$ bashron add backup ~/scripts/backup.sh --at 02:00
-$ bashron start
-```
+
+Source: [github.com/shadowmornachAsia/Bashron](https://github.com/shadowmornachAsia/Bashron)
 
 ## Install
 
+Pick whichever Python tool you already use — all three install the same package from PyPI:
+
 ```bash
-pip install bashron
-# or with uv
+# uv (recommended — fastest, zero-setup)
 uv tool install bashron
+
+# pipx (isolated, great for CLI tools)
+pipx install bashron
+
+# plain pip
+pip install bashron
+```
+
+Install straight from the git repo (latest `main`):
+
+```bash
+uv tool install git+https://github.com/shadowmornachAsia/Bashron
+# or
+pipx install git+https://github.com/shadowmornachAsia/Bashron
+```
+
+Verify it worked:
+
+```bash
+bashron --version
+bashron doctor
 ```
 
 ## Quickstart — verify it works
@@ -23,12 +51,10 @@ After installing, run this to confirm everything is working:
 # 1. Check your system is ready
 bashron doctor
 
-# 2. Download the hello-world example script
-curl -O https://raw.githubusercontent.com/yourusername/bashron/main/examples/hello.sh
-chmod +x hello.sh
+# 2. Scaffold a hello-world script in one command
+bashron new hello --at 9am
 
-# 3. Add it as a job and run it immediately
-bashron add hello ./hello.sh
+# 3. Run it right now (ignores the schedule)
 bashron run hello
 
 # 4. Check the output
@@ -99,6 +125,8 @@ bashron service uninstall
 | `bashron list` | List all scheduled jobs |
 | `bashron list --json` | List all scheduled jobs as JSON |
 | `bashron status` | Live dashboard: next run, last run, exit code |
+| `bashron status --watch` | Auto-refreshing dashboard (Ctrl+C to stop) |
+| `bashron ls` / `rm` / `ps` | Aliases for list, remove, status |
 | `bashron run <name>` | Run a job immediately |
 | `bashron run --all` | Run every job immediately |
 | `bashron logs <name>` | View job logs |
@@ -117,6 +145,13 @@ bashron service uninstall
 ## Examples
 
 ```bash
+# Friendly time formats — no more 24h cron math
+bashron add morning ~/scripts/morning.sh --at 9am
+bashron add teatime ~/scripts/tea.sh --at 3:30pm
+
+# Preview a schedule in plain English before saving it
+bashron add backup ~/scripts/backup.sh --every weekly --on friday --at 9am --explain
+
 # Run every hour
 bashron add sync ~/scripts/sync.sh --every hourly
 
@@ -188,6 +223,60 @@ cli.py
   |
   +--> platform_utils.py -> OS/bash/python detection
 ```
+
+## Publishing a new release (maintainers)
+
+bashron ships to PyPI. `uv tool install`, `pipx install`, and `pip install` all
+pull from the same artifact, so one release reaches everyone.
+
+**One-time setup**
+
+1. Create accounts at [pypi.org](https://pypi.org/account/register/) and
+   [test.pypi.org](https://test.pypi.org/account/register/). They're separate.
+2. On each site, generate a scoped API token under *Account settings → API
+   tokens*. Save them somewhere safe — PyPI shows each token exactly once.
+3. Store the tokens in your shell so `uv publish` can read them:
+
+   ```bash
+   export UV_PUBLISH_TOKEN_TESTPYPI="pypi-..."   # test.pypi.org token
+   export UV_PUBLISH_TOKEN="pypi-..."             # real pypi.org token
+   ```
+
+**Every release**
+
+```bash
+# 1. Bump the version in pyproject.toml (e.g. 0.1.0 → 0.2.0)
+#    PyPI versions are IMMUTABLE — you can never reuse or overwrite one.
+
+# 2. Run the full test suite — the coverage gate must stay at 100%.
+PYTHONPATH=src python -m pytest -q
+
+# 3. Clean old artifacts and build fresh ones.
+rm -rf dist/
+uv build
+#   → dist/bashron-<ver>-py3-none-any.whl
+#   → dist/bashron-<ver>.tar.gz
+
+# 4. Dry run against TestPyPI first (safe, throwaway).
+uv publish --publish-url https://test.pypi.org/legacy/ \
+           --token "$UV_PUBLISH_TOKEN_TESTPYPI"
+
+# 5. Install from TestPyPI in a fresh venv and smoke-test it.
+uv tool install --index-url https://test.pypi.org/simple/ \
+                --extra-index-url https://pypi.org/simple/ \
+                bashron
+bashron --version
+bashron doctor
+
+# 6. Publish for real.
+uv publish --token "$UV_PUBLISH_TOKEN"
+
+# 7. Tag the release so the git history matches PyPI.
+git tag v<ver> && git push origin v<ver>
+```
+
+If you prefer the classic toolchain, `python -m build` + `twine upload dist/*`
+works identically.
 
 ## PR And Commit Counting
 

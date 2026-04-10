@@ -1,6 +1,7 @@
 """bashron CLI — warrior-class daily bash script scheduler."""
 
 import json
+import re
 import subprocess
 import time
 from datetime import datetime
@@ -11,6 +12,7 @@ import schedule
 import typer
 from rich import box
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 
@@ -51,6 +53,45 @@ def _version_callback(value: bool) -> None:
             f"| {get_os()}"
         )
         raise typer.Exit()
+
+
+_NATURAL_TIME_RE = re.compile(
+    r"^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?\s*$"
+)
+
+
+def _parse_time(value: str) -> str:
+    """Normalize a human time string into ``HH:MM`` 24-hour format.
+
+    Accepts ``9am``, ``9 AM``, ``3:30pm``, ``14:30``, ``09:00`` — so users
+    never have to think about 24-hour format on the command line.
+    Raises ``ValueError`` with a friendly message for anything else.
+    """
+    if value is None:
+        raise ValueError("Time is required.")
+    match = _NATURAL_TIME_RE.match(value)
+    if not match:
+        raise ValueError(
+            f"Invalid time '{value}'. Try formats like 9am, 3:30pm, or 14:30."
+        )
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    suffix = match.group(3)
+    if suffix:
+        suffix = suffix.lower()
+        if not 1 <= hour <= 12:
+            raise ValueError(
+                f"Invalid time '{value}'. 12-hour clock expects hour 1-12."
+            )
+        if suffix == "am":
+            hour = 0 if hour == 12 else hour
+        else:  # pm
+            hour = 12 if hour == 12 else hour + 12
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(
+            f"Invalid time '{value}'. Hour must be 0-23 and minute 0-59."
+        )
+    return f"{hour:02d}:{minute:02d}"
 
 
 def _has_time_passed_today(run_at: str, now: Optional[datetime] = None) -> bool:
@@ -201,7 +242,9 @@ def _startup_banner() -> str:
     lines = [
         r"[bold cyan] _               _                    [/]",
         r"[bold bright_cyan]| |__   __ _ ___| |__  _ __ ___  _ __ [/]",
-        r"[bold blue]| '_ \ / _` / __| '_ \| '__/ _ \| '_ \[/]",
+        # Close the tag BEFORE the trailing backslash — otherwise Rich parses
+        # the `\[` as an escaped literal `[` and the `[/]` leaks as text.
+        r"[bold blue]| '_ \ / _` / __| '_ \| '__/ _ \| '_ [/bold blue]" + "\\",
         r"[bold bright_blue]| |_) | (_| \__ \ | | | | | (_) | | | |[/]",
         r"[bold magenta]|_.__/ \__,_|___/_| |_|_|  \___/|_| |_|[/]",
         "",
@@ -245,6 +288,19 @@ def _git_output(args: list[str]) -> str:
     return result.stdout.strip()
 
 
+def _welcome_panel() -> Panel:
+    """Return the empty-state welcome shown when the user has no jobs yet."""
+    body = (
+        f"{_startup_banner()}\n\n"
+        "[bold]No jobs yet — let's fix that in 30 seconds.[/]\n\n"
+        "  [bold cyan]1.[/] [bold]bashron init[/]              [dim]guided wizard[/]\n"
+        "  [bold cyan]2.[/] [bold]bashron new my-task[/]       [dim]scaffold a script[/]\n"
+        "  [bold cyan]3.[/] [bold]bashron add <name> <file>[/] [dim]schedule an existing script[/]\n\n"
+        "[dim]Tip:[/] times are friendly — [bold]--at 9am[/], [bold]--at 3:30pm[/], [bold]--at 14:30[/] all work."
+    )
+    return Panel(body, border_style="cyan", title="[bold]welcome to bashron[/]")
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -253,8 +309,16 @@ def main(
     ),
 ) -> None:
     if ctx.invoked_subcommand is None:
-        console.print(Panel.fit(_startup_banner(), border_style="cyan"))
-        console.print(ctx.get_help())
+        scripts = store.load()
+        if not scripts:
+            console.print(_welcome_panel())
+        else:
+            console.print(_render_status(scripts, datetime.now()))
+            console.print(
+                "[dim]Commands:[/] [bold]add[/] · [bold]run[/] · [bold]logs[/] · "
+                "[bold]status --watch[/] · [bold]service install[/]  "
+                "([dim]full help:[/] [bold]bashron --help[/])"
+            )
 
 
 @app.command()
@@ -410,7 +474,7 @@ def init() -> None:
     ))
     name = typer.prompt("? What should we call this job?")
     path_str = typer.prompt("? Path to your script?")
-    at = typer.prompt("? What time should it run? (HH:MM, 24h)", default="08:00")
+    at_raw = typer.prompt("? What time should it run? (e.g. 9am, 3:30pm, 14:30)", default="08:00")
 
     script_path = Path(path_str).expanduser().resolve()
     if not script_path.exists():
@@ -418,11 +482,13 @@ def init() -> None:
         raise typer.Exit(1)
 
     try:
-        if _has_time_passed_today(at):
-            console.print(f"[yellow]Note:[/] {at} has already passed today. First run will be tomorrow.")
-    except ValueError:
-        console.print(f"[red]Error:[/] Invalid time '{at}'. Use HH:MM in 24h format.")
+        at = _parse_time(at_raw)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/] {exc}")
         raise typer.Exit(1)
+
+    if _has_time_passed_today(at):
+        console.print(f"[yellow]Note:[/] {at} has already passed today. First run will be tomorrow.")
 
     try:
         store.add(name, str(script_path), at)
@@ -446,9 +512,15 @@ def init() -> None:
 def new_script(
     name: str = typer.Argument(..., help="Name for the new job and script file."),
     scripts_dir: str = typer.Option("~/scripts", "--dir", help="Directory to scaffold the script in."),
-    at: str = typer.Option("08:00", "--at", help="Daily run time in HH:MM (24h format)."),
+    at: str = typer.Option("08:00", "--at", help="Daily run time — e.g. 9am, 3:30pm, or 14:30."),
 ) -> None:
     """Scaffold a new bash script and schedule it immediately."""
+    try:
+        at = _parse_time(at)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(1)
+
     out_dir = Path(scripts_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
     script_file = out_dir / f"{name}.sh"
@@ -478,16 +550,15 @@ def new_script(
 # status
 # ---------------------------------------------------------------------------
 
-@app.command()
-def status() -> None:
-    """Show scheduled jobs with last run time, exit code, and next run."""
-    scripts = store.load()
-    if not scripts:
-        console.print("[dim]No scripts scheduled. Use [bold]bashron add[/] to get started.[/dim]")
-        return
-
-    now = datetime.now()
-    table = Table(box=box.ROUNDED, header_style="bold cyan", show_lines=True)
+def _render_status(scripts: list[dict], now: datetime) -> Table:
+    """Build the Rich table used by both `status` and the bare-command view."""
+    table = Table(
+        box=box.ROUNDED,
+        header_style="bold cyan",
+        show_lines=True,
+        title=f"[bold cyan]bashron[/]  [dim]·[/] {len(scripts)} job(s)  "
+              f"[dim]·[/] {now.strftime('%Y-%m-%d %H:%M:%S')}",
+    )
     table.add_column("Name", style="cyan")
     table.add_column("Next Run", style="yellow")
     table.add_column("Last Run", style="dim")
@@ -504,7 +575,43 @@ def status() -> None:
             exit_col = f"[red]{exit_code_str}[/red]"
         table.add_row(s["name"], next_run, last_run, exit_col)
 
-    console.print(table)
+    return table
+
+
+def _watch_status(interval: float, iterations: Optional[int] = None) -> None:
+    """Refresh the status dashboard in place until Ctrl+C (or `iterations` ticks)."""
+    step = 0
+    try:
+        with Live(
+            _render_status(store.load(), datetime.now()),
+            console=console,
+            refresh_per_second=4,
+            screen=False,
+        ) as live:
+            while iterations is None or step < iterations:
+                time.sleep(interval)
+                live.update(_render_status(store.load(), datetime.now()))
+                step += 1
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped watching.[/dim]")
+
+
+@app.command()
+def status(
+    watch: bool = typer.Option(False, "--watch", "-w", help="Refresh the dashboard every few seconds (Ctrl+C to stop)."),
+    interval: float = typer.Option(2.0, "--interval", help="Refresh interval in seconds when using --watch."),
+) -> None:
+    """Show scheduled jobs with last run time, exit code, and next run."""
+    scripts = store.load()
+    if not scripts:
+        console.print(_welcome_panel())
+        return
+
+    if watch:
+        _watch_status(interval)
+        return
+
+    console.print(_render_status(scripts, datetime.now()))
 
 
 # ---------------------------------------------------------------------------
@@ -595,22 +702,26 @@ def _download_script(url: str, name: str) -> Path:
 def add(
     name: str = typer.Argument(..., help="Unique name for this script job."),
     path: str = typer.Argument(..., help="Path to the .sh script file, or an https:// URL to download it."),
-    at: str = typer.Option("08:00", "--at", "-t", help="Run time in HH:MM (24h). Ignored for --every hourly."),
+    at: str = typer.Option("08:00", "--at", "-t", help="Run time — e.g. 9am, 3:30pm, 14:30. Ignored for --every hourly."),
     every: str = typer.Option("daily", "--every", help="Frequency: hourly, daily, weekly, monthly."),
     on: str = typer.Option("", "--on", help="Weekday for weekly (e.g. monday) or day of month for monthly (1-28)."),
     notify: bool = typer.Option(False, "--notify", help="Send a desktop notification on failure (macOS only)."),
     webhook: str = typer.Option("", "--webhook", help="Webhook URL to POST on failure (Slack/Discord)."),
+    explain: bool = typer.Option(False, "--explain", help="Preview the schedule in plain English without saving."),
 ) -> None:
     """Add a bash script on a schedule. Path can be a local file or a URL."""
     # Resolve script path
     if _is_url(path):
-        console.print(f"[cyan]Downloading[/] {path}")
-        try:
-            script_path = _download_script(path, name)
-        except RuntimeError as exc:
-            console.print(f"[red]Error:[/] {exc}")
-            raise typer.Exit(1)
-        console.print(f"[green]Saved[/] {script_path}")
+        if explain:
+            script_path = Path(f"[will download] {path}")
+        else:
+            console.print(f"[cyan]Downloading[/] {path}")
+            try:
+                script_path = _download_script(path, name)
+            except RuntimeError as exc:
+                console.print(f"[red]Error:[/] {exc}")
+                raise typer.Exit(1)
+            console.print(f"[green]Saved[/] {script_path}")
     else:
         script_path = Path(path).expanduser().resolve()
         if not script_path.exists():
@@ -648,14 +759,39 @@ def add(
             console.print("[red]Error:[/] --on must be a day number between 1 and 28 for monthly frequency.")
             raise typer.Exit(1)
 
-    # Validate run time (skip for hourly — no specific time needed)
+    # Normalize run time (skip for hourly — no specific time needed)
     if freq != "hourly":
         try:
-            if _has_time_passed_today(at):
-                console.print(f"[yellow]Warning:[/] {at} has already passed today. First run will be tomorrow.")
-        except ValueError:
-            console.print(f"[red]Error:[/] Invalid time '{at}'. Use HH:MM in 24h format.")
+            at = _parse_time(at)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/] {exc}")
             raise typer.Exit(1)
+        if _has_time_passed_today(at):
+            console.print(f"[yellow]Warning:[/] {at} has already passed today. First run will be tomorrow.")
+
+    # --explain: show the human-readable preview and bail without writing
+    if explain:
+        preview_entry = {
+            "name": name,
+            "path": str(script_path),
+            "run_at": at,
+            "frequency": freq,
+            "weekday": weekday,
+            "month_day": month_day,
+        }
+        next_run = _next_run_str(preview_entry, datetime.now())
+        console.print(
+            Panel(
+                f"[bold]Dry run — nothing was saved.[/]\n\n"
+                f"  [dim]name    [/dim] [cyan]{name}[/]\n"
+                f"  [dim]script  [/dim] {script_path}\n"
+                f"  [dim]when    [/dim] [yellow]{next_run}[/]\n\n"
+                f"Run again without [bold]--explain[/] to actually schedule it.",
+                title="[bold cyan]bashron[/] preview",
+                border_style="cyan",
+            )
+        )
+        return
 
     try:
         entry = store.add(
@@ -724,7 +860,7 @@ def list_jobs(
         console.print_json(json.dumps(payload))
         return
     if not scripts:
-        console.print("[dim]No scripts scheduled. Use [bold]bashron add[/] to get started.[/dim]")
+        console.print(_welcome_panel())
         return
 
     table = Table(box=box.ROUNDED, header_style="bold cyan", show_lines=True)
@@ -1030,3 +1166,12 @@ def service_uninstall() -> None:
         console.print("[green]Service uninstalled.[/]")
     else:
         console.print("[dim]No service found.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# command aliases — free muscle-memory for unix / docker / git users
+# ---------------------------------------------------------------------------
+
+app.command(name="ls", help="Alias for [bold]list[/].")(list_jobs)
+app.command(name="rm", help="Alias for [bold]remove[/].")(remove)
+app.command(name="ps", help="Alias for [bold]status[/].")(status)
