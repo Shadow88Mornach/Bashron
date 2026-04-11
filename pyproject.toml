@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bashron"
-version = "0.1.1"
+version = "0.1.2"
 description = "Warrior-class bash script scheduler — friendly time formats, live dashboard, zero cron syntax."
 readme = "README.md"
 license = { text = "MIT" }

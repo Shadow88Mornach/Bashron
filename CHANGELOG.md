@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-04-11
+
+### Added
+- `examples/hello-popup.sh` — macOS dialog demo. Pops up a native `osascript`
+  dialog every `INTERVAL_SECONDS` (default 10) and polls `bashron list --json`
+  each iteration, so running `bashron remove <name>` cleanly stops the loop
+  with no Ctrl+C or stray background processes. Refuses to start until a
+  matching job is scheduled, so the user always has a stop handle.
+- `.github/workflows/release.yml` — tag-triggered release workflow that
+  builds with `uv`, validates with `twine check`, and publishes to PyPI via
+  trusted publishing (OIDC). No API tokens stored anywhere.
+- `.github/workflows/ci.yml` — runs the full test suite on Python 3.9–3.13
+  for every push and pull request.
+- `RELEASING.md` — maintainer guide for the one-time PyPI trusted-publisher
+  setup and the new three-command release flow.
+
 ## [0.1.1] - 2026-04-11
 
 ### Added
@@ -34,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Banner rendering bug where `[/]` leaked as literal text in the welcome
   panel because Rich parsed `\[` as an escaped literal.
 
-[Unreleased]: https://github.com/shadowmornachAsia/Bashron/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/shadowmornachAsia/Bashron/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/shadowmornachAsia/Bashron/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/shadowmornachAsia/Bashron/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/shadowmornachAsia/Bashron/releases/tag/v0.1.0
